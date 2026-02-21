@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0",
+  "root": {
+    "title": "Functional specification",
+    "content_type": "md",
+    "content": "Bla",
+    "sensors": "B10",
+    "actuators": "M10",
+    "image": "",
+    "printable": true,
+    "sort_key": 10,
+    "children": [
+      {
+        "title": "Document",
+        "content_type": "md",
+        "content": "",
+        "sensors": "",
+        "actuators": "",
+        "image": "",
+        "printable": true,
+        "sort_key": 10,
+        "children": [
+          {
+            "title": "History",
+            "content_type": "md",
+            "content": "",
+            "sensors": "",
+            "actuators": "",
+            "image": "",
+            "printable": true,
+            "sort_key": 10,
+            "children": []
+          },
+          {
+            "title": "Purpose",
+            "content_type": "md",
+            "content": "",
+            "sensors": "",
+            "actuators": "",
+            "image": "",
+            "printable": true,
+            "sort_key": 20,
+            "children": []
+          },
+          {
+            "title": "References",
+            "content_type": "md",
+            "content": "",
+            "sensors": "",
+            "actuators": "",
+            "image": "",
+            "printable": true,
+            "sort_key": 30,
+            "children": []
+          }
+        ]
+      },
+      {
+        "title": "Line",
+        "content_type": "md",
+        "content": "",
+        "sensors": "",
+        "actuators": "",
+        "image": "",
+        "printable": true,
+        "sort_key": 20,
+        "children": []
+      },
+      {
+        "title": "Line Components",
+        "content_type": "md",
+        "content": "",
+        "sensors": "",
+        "actuators": "",
+        "image": "",
+        "printable": true,
+        "sort_key": 30,
+        "children": []
+      },
+      {
+        "title": "Line Functions",
+        "content_type": "md",
+        "content": "",
+        "sensors": "",
+        "actuators": "",
+        "image": "",
+        "printable": true,
+        "sort_key": 40,
+        "children": []
+      },
+      {
+        "title": "Glossary",
+        "content_type": "md",
+        "content": "",
+        "sensors": "",
+        "actuators": "",
+        "image": "",
+        "printable": true,
+        "sort_key": 50,
+        "children": []
+      }
+    ]
+  }
+}

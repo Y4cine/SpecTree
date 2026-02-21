@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spectree"
+version = "0.1.0"
+description = "Hierarchical Text Tree Editor MVP"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "PyQt5>=5.15",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[tool.setuptools]
+packages = ["app", "domain"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
