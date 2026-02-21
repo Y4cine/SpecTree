@@ -33,8 +33,9 @@ from domain.commands import (
     UpdateFieldCommand,
 )
 from domain.export_md import export_markdown_file
+from domain.file_lock import DocumentLock
 from domain.model import Node, sorted_children
-from domain.persistence import load_spec, new_default_model, save_spec
+from domain.persistence import SaveWithoutLockError, ensure_save_permitted, load_spec, new_default_model, save_spec
 from domain.transform import TransformError
 
 
@@ -51,11 +52,14 @@ class FocusOutTextEdit(QPlainTextEdit):
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("SpecTree MVP")
+        self.base_title = "SpecTree MVP"
+        self.setWindowTitle(self.base_title)
 
         self.current_path: Path | None = None
         self.model = new_default_model()
         self.command_manager = CommandManager(self.model)
+        self.document_lock = DocumentLock()
+        self.read_only_mode = False
         self._loading_fields = False
 
         self.tree = QTreeWidget()
@@ -84,15 +88,15 @@ class MainWindow(QMainWindow):
         editor_layout.addRow("", self.printable_check)
 
         button_row = QHBoxLayout()
-        add_sibling_button = QPushButton("Add Sibling")
-        add_sibling_button.clicked.connect(self.add_sibling)
-        add_child_button = QPushButton("Add Child")
-        add_child_button.clicked.connect(self.add_child)
-        delete_button = QPushButton("Delete")
-        delete_button.clicked.connect(self.delete_selected)
-        button_row.addWidget(add_sibling_button)
-        button_row.addWidget(add_child_button)
-        button_row.addWidget(delete_button)
+        self.add_sibling_button = QPushButton("Add Sibling")
+        self.add_sibling_button.clicked.connect(self.add_sibling)
+        self.add_child_button = QPushButton("Add Child")
+        self.add_child_button.clicked.connect(self.add_child)
+        self.delete_button = QPushButton("Delete")
+        self.delete_button.clicked.connect(self.delete_selected)
+        button_row.addWidget(self.add_sibling_button)
+        button_row.addWidget(self.add_child_button)
+        button_row.addWidget(self.delete_button)
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
@@ -106,6 +110,19 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(splitter)
 
         self._build_toolbar()
+        self._mutating_widgets = [
+            self.title_edit,
+            self.content_edit,
+            self.sensors_edit,
+            self.actuators_edit,
+            self.image_edit,
+            self.printable_check,
+            self.add_sibling_button,
+            self.add_child_button,
+            self.delete_button,
+        ]
+        self.statusBar()
+        self._set_read_only_mode(False)
         self._refresh_tree()
 
     def _build_toolbar(self) -> None:
@@ -120,23 +137,53 @@ class MainWindow(QMainWindow):
             toolbar.addAction(action)
             return action
 
-        add_action("New", self.new_file)
-        add_action("Open", self.open_file)
-        add_action("Save", self.save_file, "Ctrl+S")
-        add_action("Export", self.export_markdown)
+        self.new_action = add_action("New", self.new_file)
+        self.open_action = add_action("Open", self.open_file)
+        self.save_action = add_action("Save", self.save_file, "Ctrl+S")
+        self.export_action = add_action("Export", self.export_markdown)
         toolbar.addSeparator()
-        add_action("Move Up", self.move_up)
-        add_action("Move Down", self.move_down)
-        add_action("Flatten", self.flatten_selected)
-        add_action("Expand", self.expand_selected)
+        self.move_up_action = add_action("Move Up", self.move_up)
+        self.move_down_action = add_action("Move Down", self.move_down)
+        self.flatten_action = add_action("Flatten", self.flatten_selected)
+        self.expand_action = add_action("Expand", self.expand_selected)
         toolbar.addSeparator()
-        add_action("Undo", self.undo, "Ctrl+Z")
-        add_action("Redo", self.redo, "Ctrl+Y")
+        self.undo_action = add_action("Undo", self.undo, "Ctrl+Z")
+        self.redo_action = add_action("Redo", self.redo, "Ctrl+Y")
 
         delete_action = QAction("Delete", self)
         delete_action.setShortcut(QKeySequence(Qt.Key_Delete))
         delete_action.triggered.connect(self.delete_selected)
         self.addAction(delete_action)
+        self.delete_action = delete_action
+        self._mutating_actions = [
+            self.save_action,
+            self.move_up_action,
+            self.move_down_action,
+            self.flatten_action,
+            self.expand_action,
+            self.delete_action,
+        ]
+
+    def _update_window_title(self) -> None:
+        suffix = " [Read-only]" if self.read_only_mode else ""
+        self.setWindowTitle(f"{self.base_title}{suffix}")
+
+    def _set_read_only_mode(self, read_only: bool) -> None:
+        self.read_only_mode = read_only
+        for action in self._mutating_actions:
+            action.setEnabled(not read_only)
+        for widget in self._mutating_widgets:
+            widget.setEnabled(not read_only)
+
+        if read_only:
+            self.statusBar().showMessage("READ-ONLY – File locked by another instance")
+        else:
+            self.statusBar().clearMessage()
+
+        self._update_window_title()
+
+    def _release_document_lock(self) -> None:
+        self.document_lock.release()
 
     def _selected_path(self) -> tuple[int, ...] | None:
         items = self.tree.selectedItems()
@@ -197,6 +244,9 @@ class MainWindow(QMainWindow):
         self._loading_fields = False
 
     def _execute(self, command, keep_selection: tuple[int, ...] | None = None) -> None:
+        if self.read_only_mode:
+            QMessageBox.critical(self, "Read-only", "Cannot modify while file is locked by another instance.")
+            return
         try:
             self.command_manager.execute(command)
             self._refresh_tree(selected_path=keep_selection or self._selected_path())
@@ -204,7 +254,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Operation failed", str(exc))
 
     def _commit_field(self, field_name: str, value) -> None:
-        if self._loading_fields:
+        if self._loading_fields or self.read_only_mode:
             return
         path = self._selected_path()
         if path is None:
@@ -287,9 +337,11 @@ class MainWindow(QMainWindow):
     def new_file(self) -> None:
         if not self._confirm_discard_if_dirty():
             return
+        self._release_document_lock()
         self.model = new_default_model()
         self.command_manager = CommandManager(self.model)
         self.current_path = None
+        self._set_read_only_mode(False)
         self._refresh_tree(tuple())
 
     def open_file(self) -> None:
@@ -299,9 +351,16 @@ class MainWindow(QMainWindow):
         if not path:
             return
         try:
-            self.model = load_spec(path)
+            opened_model = load_spec(path)
+            opened_path = Path(path)
+
+            self._release_document_lock()
+            has_lock = self.document_lock.acquire_for_path(opened_path)
+
+            self.model = opened_model
             self.command_manager = CommandManager(self.model)
-            self.current_path = Path(path)
+            self.current_path = opened_path
+            self._set_read_only_mode(not has_lock)
             self._refresh_tree(tuple())
         except (ValueError, OSError) as exc:
             QMessageBox.critical(self, "Open failed", str(exc))
@@ -311,11 +370,22 @@ class MainWindow(QMainWindow):
             path, _ = QFileDialog.getSaveFileName(self, "Save spec", "spec.json", "JSON (*.json)")
             if not path:
                 return
-            self.current_path = Path(path)
+            save_path = Path(path)
+            if not self.document_lock.acquire_for_path(save_path):
+                self.current_path = save_path
+                self._set_read_only_mode(True)
+                try:
+                    ensure_save_permitted(False)
+                except SaveWithoutLockError as exc:
+                    QMessageBox.critical(self, "Save failed", str(exc))
+                return
+            self.current_path = save_path
+            self._set_read_only_mode(False)
         try:
+            ensure_save_permitted(self.document_lock.owns_lock)
             save_spec(self.current_path, self.model)
             self.command_manager.is_dirty = False
-        except OSError as exc:
+        except (OSError, SaveWithoutLockError) as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
 
     def export_markdown(self) -> None:
@@ -341,6 +411,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._confirm_discard_if_dirty():
+            self._release_document_lock()
             event.accept()
         else:
             event.ignore()

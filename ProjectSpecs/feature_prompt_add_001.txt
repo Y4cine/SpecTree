@@ -1,0 +1,109 @@
+You are extending an existing Python application.
+
+Read the following files carefully:
+- spec/spec_v1.md
+- spec/addenda/add_001_multi_instance_locking.md
+
+Implement ONLY the behavior described in add_001_multi_instance_locking.md.
+Do NOT refactor unrelated parts of the system.
+Do NOT introduce new architecture unless strictly required.
+
+This is an incremental change.
+
+----------------------------------------
+STEP STRATEGY (MANDATORY)
+----------------------------------------
+
+Step 1 — Design clarification (short)
+Explain in 5–10 lines:
+- What file locking approach you will use (must work on Windows).
+- Where lock acquisition and release will be implemented.
+- How read-only state will be represented in the application.
+
+Then proceed to implementation.
+
+----------------------------------------
+
+Step 2 — Locking Implementation
+Requirements:
+
+- Use OS-level file locking.
+- Lock must be exclusive.
+- Lock must be tied to the file path.
+- Lock must release automatically on process exit.
+- No background service.
+- No database.
+
+Recommended: portalocker (if external dependency required, update requirements).
+
+Implement:
+
+- Acquire lock when file is opened.
+- If locking fails:
+    - Load file in read-only mode.
+- If locking succeeds:
+    - Enable normal read/write mode.
+
+Lock must be released:
+- On file close.
+- On application close.
+
+----------------------------------------
+
+Step 3 — Read-only Mode Behavior
+
+When file is read-only:
+
+- Save must be disabled.
+- Commands that modify the model must not execute.
+- UI must visually indicate read-only state:
+    - Status bar message
+    - Window title suffix "[Read-only]"
+
+Attempting to save without lock:
+- Must show error message box.
+- Must not write to disk.
+
+----------------------------------------
+
+Step 4 — Tests
+
+Add tests covering:
+
+1) Open file normally → writable.
+2) Simulate second lock attempt → read-only mode triggered.
+3) Save in read-only → raises controlled error.
+4) Lock released after closing instance.
+
+If OS-level locking cannot be fully simulated in pytest,
+mock lock behavior to simulate both success and failure cases.
+
+All existing tests must continue to pass.
+
+----------------------------------------
+
+Step 5 — Checkpoint
+
+At the end output:
+
+1) Files changed/created
+2) How to run tests
+3) How to manually test multi-instance
+4) Any assumptions made
+
+----------------------------------------
+
+STRICT RULES
+
+- No timestamp-based conflict detection.
+- No merge functionality.
+- No threading.
+- No refactoring of unrelated modules.
+- Keep implementation minimal and deterministic.
+- Do not modify domain logic beyond what is required.
+
+If anything in spec is ambiguous:
+Choose the simplest possible interpretation.
+Document the assumption in README under "Assumptions".
+
+Output only modified/new files and checkpoint summary.

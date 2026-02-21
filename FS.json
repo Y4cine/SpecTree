@@ -56,18 +56,7 @@
         ]
       },
       {
-        "title": "Document flat",
-        "content_type": "md",
-        "content": "# Document\n\n## History\nasd\n## Purpose\nass\n## References\nss",
-        "sensors": "",
-        "actuators": "",
-        "image": "",
-        "printable": true,
-        "sort_key": 15,
-        "children": []
-      },
-      {
-        "title": "Document expanded",
+        "title": "Document",
         "content_type": "md",
         "content": "",
         "sensors": "",
@@ -123,15 +112,60 @@
         "children": []
       },
       {
-        "title": "Line Components",
+        "title": "Line Components flat",
         "content_type": "md",
-        "content": "# BAK\n# BPK\n\n## Purpose\nass\n## References\nss",
+        "content": "# Line Components\n## BAK\n## BPK\n## BCK",
         "sensors": "",
         "actuators": "",
         "image": "",
         "printable": true,
         "sort_key": 30,
         "children": []
+      },
+      {
+        "title": "Line Components",
+        "content_type": "md",
+        "content": "",
+        "sensors": "",
+        "actuators": "",
+        "image": "",
+        "printable": true,
+        "sort_key": 35,
+        "children": [
+          {
+            "title": "BAK",
+            "content_type": "md",
+            "content": "",
+            "sensors": "",
+            "actuators": "",
+            "image": "",
+            "printable": true,
+            "sort_key": 10,
+            "children": []
+          },
+          {
+            "title": "BPK",
+            "content_type": "md",
+            "content": "",
+            "sensors": "",
+            "actuators": "",
+            "image": "",
+            "printable": true,
+            "sort_key": 20,
+            "children": []
+          },
+          {
+            "title": "BCK",
+            "content_type": "md",
+            "content": "",
+            "sensors": "",
+            "actuators": "",
+            "image": "",
+            "printable": true,
+            "sort_key": 30,
+            "children": []
+          }
+        ]
       },
       {
         "title": "Line Functions",

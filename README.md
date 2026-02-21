@@ -29,3 +29,4 @@ pytest
 - Flatten/Expand on root are blocked because result insertion must be as sibling after source.
 - Markdown export always starts from the tree root and includes root heading/content unless filtered out by `printable_only`.
 - JSON loader tolerates missing optional keys by using spec defaults.
+- Multi-instance protection uses an exclusive OS lock on `<document>.lock`; instances without the lock open in read-only mode and cannot execute model-changing actions or save.

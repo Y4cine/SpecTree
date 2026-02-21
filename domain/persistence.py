@@ -9,6 +9,10 @@ from domain.model import Node, SpecModel, node_from_dict, node_to_ordered_dict
 DEFAULT_FILE_NAME = "spec.json"
 
 
+class SaveWithoutLockError(PermissionError):
+    pass
+
+
 def new_default_model() -> SpecModel:
     root = Node(title="Root", sort_key=10.0)
     return SpecModel(schema_version="1.0", root=root)
@@ -22,6 +26,11 @@ def load_spec(path: str | Path) -> SpecModel:
         raise ValueError("Invalid spec file: missing root object")
     root = node_from_dict(root_payload)
     return SpecModel(schema_version=schema_version, root=root)
+
+
+def ensure_save_permitted(has_lock: bool) -> None:
+    if not has_lock:
+        raise SaveWithoutLockError("Save denied: file is read-only because it is locked by another instance.")
 
 
 def save_spec(path: str | Path, model: SpecModel) -> None:
