@@ -1,0 +1,52 @@
+You are extending an existing Python application.
+
+Read:
+- spec/spec_v1.md
+- spec/addenda/add_003_tree_context_menu.md
+
+Implement ONLY this addendum.
+Do NOT refactor unrelated code.
+Tree component is QTreeWidget.
+
+----------------------------------------
+Step 1 — Quick plan (5–10 lines)
+- Where you will attach the context menu (policy + handler).
+- How you will identify the target node (QTreeWidgetItem -> node_ref via Qt.UserRole).
+- How you will execute commands and refresh UI (rebuild-from-domain).
+
+Then implement.
+
+----------------------------------------
+Step 2 — Implement context menu
+- Add right-click menu on tree items.
+- Ensure right-clicked item becomes selected.
+- Menu actions exactly as specified (Insert/Edit/Move/Tools).
+- Implement enable/disable rules.
+
+All actions must execute via CommandManager and existing domain commands.
+No direct domain mutation in UI.
+
+After each successful action:
+- rebuild tree from domain (clear + repopulate under signal blocker)
+- best-effort reselect relevant node
+- optional: focus title field after node creation
+
+----------------------------------------
+Step 3 — Error handling
+- Invalid actions show a message box and do nothing.
+- Root delete must not be possible.
+
+----------------------------------------
+Step 4 — Checkpoint
+Output:
+1) Files changed
+2) How to run app
+3) Manual test checklist for each menu action
+
+----------------------------------------
+STRICT RULES
+- No copy/paste in this addendum.
+- No cross-instance behavior.
+- Keep changes minimal.
+
+Output only changed/new files and the checkpoint.

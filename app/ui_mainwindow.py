@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSplitter,
     QToolBar,
+    QMenu,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -170,6 +171,8 @@ class MainWindow(QMainWindow):
         self.tree.setHeaderLabels(["Title"])
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
         self.tree.move_requested.connect(self._on_tree_move_requested)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_tree_context_menu)
 
         self.title_edit = QLineEdit()
         self.title_edit.editingFinished.connect(lambda: self._commit_field("title", self.title_edit.text()))
@@ -480,10 +483,162 @@ class MainWindow(QMainWindow):
             keep_selection_node=source_node,
         )
 
-    def _execute(self, command, keep_selection_node: Node | None = None) -> None:
+    def _show_tree_context_menu(self, pos) -> None:
+        target_item = self.tree.itemAt(pos)
+        if target_item is None:
+            return
+
+        self.tree.setCurrentItem(target_item)
+        target_node = target_item.data(0, Qt.UserRole)
+        if not isinstance(target_node, Node):
+            return
+
+        target_path = self._path_for_node(target_node)
+        if target_path is None:
+            return
+
+        is_root = len(target_path) == 0
+        sibling_index = target_path[-1] if not is_root else -1
+
+        if is_root:
+            move_up_enabled = False
+            move_down_enabled = False
+            sibling_ops_enabled = False
+        else:
+            parent = self.model.get_node(target_path[:-1])
+            sibling_count = len(sorted_children(parent))
+            move_up_enabled = sibling_index > 0
+            move_down_enabled = sibling_index < sibling_count - 1
+            sibling_ops_enabled = True
+
+        has_children = len(sorted_children(target_node)) > 0
+
+        menu = QMenu(self)
+        insert_menu = menu.addMenu("Insert")
+        edit_menu = menu.addMenu("Edit")
+        move_menu = menu.addMenu("Move")
+        tools_menu = menu.addMenu("Tools")
+
+        add_child_first_action = insert_menu.addAction("Add Child (as first child)")
+        add_child_last_action = insert_menu.addAction("Add Child (as last child)")
+        add_sibling_above_action = insert_menu.addAction("Add Sibling Above")
+        add_sibling_below_action = insert_menu.addAction("Add Sibling Below")
+
+        delete_action = edit_menu.addAction("Delete Node")
+
+        move_up_action = move_menu.addAction("Move Up")
+        move_down_action = move_menu.addAction("Move Down")
+
+        flatten_action = tools_menu.addAction("Flatten Branch → Node")
+        expand_action = tools_menu.addAction("Expand Node → Branch")
+
+        add_sibling_above_action.setEnabled(sibling_ops_enabled)
+        add_sibling_below_action.setEnabled(sibling_ops_enabled)
+        delete_action.setEnabled(not is_root)
+        move_up_action.setEnabled(move_up_enabled)
+        move_down_action.setEnabled(move_down_enabled)
+        flatten_action.setEnabled((not is_root) and has_children)
+        expand_action.setEnabled(not is_root)
+
+        selected_action = menu.exec_(self.tree.viewport().mapToGlobal(pos))
+        if selected_action is None:
+            return
+
+        if selected_action == add_child_first_action:
+            created_node = Node()
+            success = self._execute(
+                CreateNodeCommand(parent_path=target_path, insert_index=0, node=created_node),
+                keep_selection_node=created_node,
+            )
+            if success:
+                self.title_edit.setFocus()
+            return
+
+        if selected_action == add_child_last_action:
+            created_node = Node()
+            success = self._execute(
+                CreateNodeCommand(
+                    parent_path=target_path,
+                    insert_index=len(sorted_children(target_node)),
+                    node=created_node,
+                ),
+                keep_selection_node=created_node,
+            )
+            if success:
+                self.title_edit.setFocus()
+            return
+
+        if selected_action == add_sibling_above_action:
+            if is_root:
+                QMessageBox.information(self, "Not allowed", "Root has no siblings.")
+                return
+            created_node = Node()
+            success = self._execute(
+                CreateNodeCommand(parent_path=target_path[:-1], insert_index=sibling_index, node=created_node),
+                keep_selection_node=created_node,
+            )
+            if success:
+                self.title_edit.setFocus()
+            return
+
+        if selected_action == add_sibling_below_action:
+            if is_root:
+                QMessageBox.information(self, "Not allowed", "Root has no siblings.")
+                return
+            created_node = Node()
+            success = self._execute(
+                CreateNodeCommand(parent_path=target_path[:-1], insert_index=sibling_index + 1, node=created_node),
+                keep_selection_node=created_node,
+            )
+            if success:
+                self.title_edit.setFocus()
+            return
+
+        if selected_action == delete_action:
+            if is_root:
+                QMessageBox.information(self, "Not allowed", "Root cannot be deleted.")
+                return
+            self._execute(DeleteNodeCommand(path=target_path))
+            return
+
+        if selected_action == move_up_action:
+            if is_root:
+                QMessageBox.information(self, "Not allowed", "Root cannot be moved.")
+                return
+            self._execute(
+                MoveNodeCommand(path=target_path, new_parent_path=target_path[:-1], new_index=sibling_index - 1),
+                keep_selection_node=target_node,
+            )
+            return
+
+        if selected_action == move_down_action:
+            if is_root:
+                QMessageBox.information(self, "Not allowed", "Root cannot be moved.")
+                return
+            self._execute(
+                MoveNodeCommand(path=target_path, new_parent_path=target_path[:-1], new_index=sibling_index + 1),
+                keep_selection_node=target_node,
+            )
+            return
+
+        if selected_action == flatten_action:
+            if is_root:
+                QMessageBox.information(self, "Not allowed", "Select a non-root node to flatten.")
+                return
+            self._execute(FlattenBranchToNodeCommand(path=target_path), keep_selection_node=target_node)
+            return
+
+        if selected_action == expand_action:
+            if is_root:
+                QMessageBox.information(self, "Not allowed", "Select a non-root node to expand.")
+                return
+            self._execute(ExpandNodeToBranchCommand(path=target_path), keep_selection_node=target_node)
+            return
+
+    def _execute(self, command, keep_selection_node: Node | None = None) -> bool:
         if self.read_only_mode:
             QMessageBox.critical(self, "Read-only", "Cannot modify while file is locked by another instance.")
-            return
+            return False
         try:
             logger.debug(
                 "Executing command: %s",
@@ -493,9 +648,11 @@ class MainWindow(QMainWindow):
             self.command_manager.execute(command)
             logger.debug("Executed command: %s", command.__class__.__name__)
             self._refresh_tree(selected_node=keep_selection_node or selected_before)
+            return True
         except (ValueError, IndexError, TransformError) as exc:
             logger.debug("Command failed: %s error=%s", command.__class__.__name__, exc)
             QMessageBox.critical(self, "Operation failed", str(exc))
+            return False
 
     def _commit_field(self, field_name: str, value) -> None:
         if self._loading_fields or self.read_only_mode:
