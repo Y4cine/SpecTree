@@ -164,6 +164,17 @@
             "printable": true,
             "sort_key": 30,
             "children": []
+          },
+          {
+            "title": "Sieve",
+            "content_type": "md",
+            "content": "",
+            "sensors": "",
+            "actuators": "",
+            "image": "",
+            "printable": true,
+            "sort_key": 40,
+            "children": []
           }
         ]
       },

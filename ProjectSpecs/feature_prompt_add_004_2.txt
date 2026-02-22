@@ -1,0 +1,61 @@
+You are extending an existing PyQt5 application.
+
+Read:
+- spec/spec_v1.md
+- spec/addenda/add_004_shortkeys_freemind_jupyter.md
+
+Implement ONLY this addendum.
+Do NOT refactor unrelated code.
+Tree component is QTreeWidget.
+
+----------------------------------------
+Step 1 — Plan (5–10 lines)
+Explain:
+- How global Ctrl+Tab will be implemented.
+- How Tree shortcuts will be implemented (QAction vs keyPressEvent override).
+- How editor Navigation/Edit mode will be implemented (eventFilter, state variable).
+
+Then proceed.
+
+----------------------------------------
+Step 2 — Implement Pane Switch
+- Add global QAction for Ctrl+Tab.
+- Toggle focus between Tree and Editor.
+- Add minimal visual indicator (status bar text acceptable).
+
+----------------------------------------
+Step 3 — Implement Tree shortcuts
+- Enter → Create sibling below + inline rename.
+- Insert → Create child + inline rename.
+- F2 → Inline rename.
+- Keep Arrow keys default.
+- Use CommandManager.
+- After command: rebuild tree and reselect node before calling editItem().
+
+----------------------------------------
+Step 4 — Implement Editor Mode System
+- Introduce NAVIGATION_MODE and EDIT_MODE state.
+- Install eventFilter on editor widgets.
+- In NAVIGATION_MODE:
+    - Up/Down change focused widget.
+    - Enter switches to EDIT_MODE.
+- In EDIT_MODE:
+    - Esc or Ctrl+Enter switches to NAVIGATION_MODE.
+    - Tab inserts indentation.
+- Ctrl+Tab must switch pane in both modes.
+
+Do NOT break normal QTextEdit behavior.
+
+----------------------------------------
+Step 5 — Checkpoint
+Output:
+1) Modified files
+2) How to run app
+3) Manual test checklist
+
+STRICT RULES
+- No new features beyond shortcuts and mode handling.
+- No domain refactor.
+- Keep implementation minimal and deterministic.
+
+Output only changed/new files and checkpoint.

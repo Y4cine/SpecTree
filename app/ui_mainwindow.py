@@ -3,10 +3,11 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PyQt5.QtCore import QMimeData, QSignalBlocker, Qt, pyqtSignal
+from PyQt5.QtCore import QEvent, QMimeData, QSignalBlocker, QTimer, Qt, pyqtSignal
 from PyQt5.QtGui import QCloseEvent, QDrag, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
+    QFrame,
     QCheckBox,
     QFileDialog,
     QFormLayout,
@@ -24,6 +25,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QAbstractItemView,
+    QStyle,
 )
 
 from domain.command_manager import CommandManager
@@ -155,6 +157,9 @@ class DragDropTreeWidget(QTreeWidget):
 
 
 class MainWindow(QMainWindow):
+    NAVIGATION_MODE = "NAVIGATION_MODE"
+    EDIT_MODE = "EDIT_MODE"
+
     def __init__(self) -> None:
         super().__init__()
         self.base_title = "SpecTree MVP"
@@ -170,6 +175,7 @@ class MainWindow(QMainWindow):
         self.tree = DragDropTreeWidget()
         self.tree.setHeaderLabels(["Title"])
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
+        self.tree.itemChanged.connect(self._on_tree_item_changed)
         self.tree.move_requested.connect(self._on_tree_move_requested)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_tree_context_menu)
@@ -180,6 +186,9 @@ class MainWindow(QMainWindow):
         self.content_edit = FocusOutTextEdit(lambda: self._commit_field("content", self.content_edit.toPlainText()))
         self.sensors_edit = FocusOutTextEdit(lambda: self._commit_field("sensors", self.sensors_edit.toPlainText()))
         self.actuators_edit = FocusOutTextEdit(lambda: self._commit_field("actuators", self.actuators_edit.toPlainText()))
+        self.content_edit.setTabChangesFocus(False)
+        self.sensors_edit.setTabChangesFocus(False)
+        self.actuators_edit.setTabChangesFocus(False)
 
         self.image_edit = QLineEdit()
         self.image_edit.editingFinished.connect(lambda: self._commit_field("image", self.image_edit.text()))
@@ -187,13 +196,15 @@ class MainWindow(QMainWindow):
         self.printable_check = QCheckBox("Printable")
         self.printable_check.toggled.connect(lambda value: self._commit_field("printable", bool(value)))
 
+        self._editor_field_frames: dict[QWidget, QFrame] = {}
+
         editor_layout = QFormLayout()
-        editor_layout.addRow("Title", self.title_edit)
-        editor_layout.addRow("Content", self.content_edit)
-        editor_layout.addRow("Sensors", self.sensors_edit)
-        editor_layout.addRow("Actuators", self.actuators_edit)
-        editor_layout.addRow("Image", self.image_edit)
-        editor_layout.addRow("", self.printable_check)
+        editor_layout.addRow("Title", self._wrap_editor_field(self.title_edit))
+        editor_layout.addRow("Content", self._wrap_editor_field(self.content_edit))
+        editor_layout.addRow("Sensors", self._wrap_editor_field(self.sensors_edit))
+        editor_layout.addRow("Actuators", self._wrap_editor_field(self.actuators_edit))
+        editor_layout.addRow("Image", self._wrap_editor_field(self.image_edit))
+        editor_layout.addRow("", self._wrap_editor_field(self.printable_check))
 
         button_row = QHBoxLayout()
         self.add_sibling_button = QPushButton("Add Sibling")
@@ -211,13 +222,45 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(editor_layout)
         right_layout.addLayout(button_row)
 
+        self.tree_pane_frame = QFrame()
+        self.tree_pane_frame.setObjectName("treePaneFrame")
+        tree_pane_layout = QVBoxLayout(self.tree_pane_frame)
+        tree_pane_layout.setContentsMargins(4, 4, 4, 4)
+        tree_pane_layout.addWidget(self.tree)
+
+        self.editor_pane_frame = QFrame()
+        self.editor_pane_frame.setObjectName("editorPaneFrame")
+        editor_pane_layout = QVBoxLayout(self.editor_pane_frame)
+        editor_pane_layout.setContentsMargins(4, 4, 4, 4)
+        editor_pane_layout.addWidget(right)
+
         splitter = QSplitter()
-        splitter.addWidget(self.tree)
-        splitter.addWidget(right)
+        splitter.addWidget(self.tree_pane_frame)
+        splitter.addWidget(self.editor_pane_frame)
         splitter.setStretchFactor(1, 1)
         self.setCentralWidget(splitter)
 
         self._build_toolbar()
+        self._editor_fields = [
+            self.title_edit,
+            self.content_edit,
+            self.sensors_edit,
+            self.actuators_edit,
+            self.image_edit,
+            self.printable_check,
+        ]
+        self._editor_pane_focus_widgets = [
+            *self._editor_fields,
+            self.add_sibling_button,
+            self.add_child_button,
+            self.delete_button,
+        ]
+        self._active_editor_widget = self.title_edit
+        self._active_pane = "TREE"
+        self.editor_mode = self.NAVIGATION_MODE
+
+        for widget in [self.tree, *self._editor_pane_focus_widgets]:
+            widget.installEventFilter(self)
         self._mutating_widgets = [
             self.title_edit,
             self.content_edit,
@@ -232,6 +275,7 @@ class MainWindow(QMainWindow):
         self.statusBar()
         self._set_read_only_mode(False)
         self._refresh_tree()
+        self._update_status_indicator()
 
     def _debug_domain_tree_lines(self) -> list[str]:
         lines: list[str] = []
@@ -260,13 +304,17 @@ class MainWindow(QMainWindow):
 
     def _build_toolbar(self) -> None:
         toolbar = QToolBar("Main")
+        toolbar.setToolButtonStyle(Qt.ToolButtonIconOnly)
         self.addToolBar(toolbar)
 
-        def add_action(text: str, callback, shortcut: str | None = None) -> QAction:
+        def add_action(text: str, callback, shortcut: str | list[str] | None = None) -> QAction:
             action = QAction(text, self)
             action.triggered.connect(callback)
-            if shortcut:
+            if isinstance(shortcut, str):
                 action.setShortcut(QKeySequence(shortcut))
+            elif shortcut:
+                action.setShortcuts([QKeySequence(value) for value in shortcut])
+            self._set_action_tooltip(action)
             toolbar.addAction(action)
             return action
 
@@ -274,20 +322,39 @@ class MainWindow(QMainWindow):
         self.open_action = add_action("Open", self.open_file)
         self.save_action = add_action("Save", self.save_file, "Ctrl+S")
         self.export_action = add_action("Export", self.export_markdown)
+        self.new_action.setIcon(self.style().standardIcon(QStyle.SP_FileIcon))
+        self.open_action.setIcon(self.style().standardIcon(QStyle.SP_DialogOpenButton))
+        self.save_action.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.export_action.setIcon(self.style().standardIcon(QStyle.SP_DialogApplyButton))
         toolbar.addSeparator()
-        self.move_up_action = add_action("Move Up", self.move_up)
-        self.move_down_action = add_action("Move Down", self.move_down)
+        self.move_up_action = add_action("Move Up", self.move_up, "Ctrl+Shift+Up")
+        self.move_down_action = add_action("Move Down", self.move_down, "Ctrl+Shift+Down")
         self.flatten_action = add_action("Flatten", self.flatten_selected)
         self.expand_action = add_action("Expand", self.expand_selected)
+        self.move_up_action.setIcon(self.style().standardIcon(QStyle.SP_ArrowUp))
+        self.move_down_action.setIcon(self.style().standardIcon(QStyle.SP_ArrowDown))
+        self.flatten_action.setIcon(self.style().standardIcon(QStyle.SP_ArrowLeft))
+        self.expand_action.setIcon(self.style().standardIcon(QStyle.SP_ArrowRight))
         toolbar.addSeparator()
         self.undo_action = add_action("Undo", self.undo, "Ctrl+Z")
-        self.redo_action = add_action("Redo", self.redo, "Ctrl+Y")
+        self.redo_action = add_action("Redo", self.redo, ["Ctrl+Y", "Ctrl+Shift+Z"])
+        self.undo_action.setIcon(self.style().standardIcon(QStyle.SP_ArrowBack))
+        self.redo_action.setIcon(self.style().standardIcon(QStyle.SP_ArrowForward))
 
         delete_action = QAction("Delete", self)
         delete_action.setShortcut(QKeySequence(Qt.Key_Delete))
+        delete_action.setShortcutContext(Qt.WidgetWithChildrenShortcut)
         delete_action.triggered.connect(self.delete_selected)
-        self.addAction(delete_action)
+        self._set_action_tooltip(delete_action)
+        self.tree.addAction(delete_action)
         self.delete_action = delete_action
+
+        self.toggle_pane_action = QAction("Toggle Pane", self)
+        self.toggle_pane_action.setShortcut(QKeySequence("Ctrl+Tab"))
+        self.toggle_pane_action.setShortcutContext(Qt.ApplicationShortcut)
+        self.toggle_pane_action.triggered.connect(self._toggle_pane_focus)
+        self.addAction(self.toggle_pane_action)
+
         self._mutating_actions = [
             self.save_action,
             self.move_up_action,
@@ -296,6 +363,228 @@ class MainWindow(QMainWindow):
             self.expand_action,
             self.delete_action,
         ]
+
+    def _set_action_tooltip(self, action: QAction) -> None:
+        shortcut = action.shortcut().toString(QKeySequence.NativeText).strip()
+        if shortcut:
+            action.setToolTip(f"{action.text()} ({shortcut})")
+        else:
+            action.setToolTip(action.text())
+
+    def _wrap_editor_field(self, widget: QWidget) -> QFrame:
+        frame = QFrame()
+        frame_layout = QVBoxLayout(frame)
+        frame_layout.setContentsMargins(2, 2, 2, 2)
+        frame_layout.addWidget(widget)
+        self._editor_field_frames[widget] = frame
+        return frame
+
+    def _is_editor_input_widget(self, widget) -> bool:
+        return widget in self._editor_fields
+
+    def _is_editor_pane_widget(self, widget) -> bool:
+        return widget in self._editor_pane_focus_widgets
+
+    def _set_editor_mode(self, mode: str) -> None:
+        if mode not in (self.NAVIGATION_MODE, self.EDIT_MODE):
+            return
+        self.editor_mode = mode
+        self._update_status_indicator()
+
+    def _set_active_pane(self, pane: str) -> None:
+        self._active_pane = pane
+        self._update_status_indicator()
+
+    def _update_status_indicator(self) -> None:
+        pane_text = "TREE" if self._active_pane == "TREE" else f"EDITOR ({self.editor_mode})"
+        if self.read_only_mode:
+            self.statusBar().showMessage(f"READ-ONLY – File locked by another instance | {pane_text}")
+        else:
+            self.statusBar().showMessage(pane_text)
+        self._update_pane_highlights()
+        self._update_editor_field_highlights()
+
+    def _update_pane_highlights(self) -> None:
+        inactive_style = "border: 1px solid #666666;"
+        tree_active_style = "border: 3px solid #2563eb;"
+        editor_inactive_style = "border: 1px solid #666666;"
+
+        if self._active_pane == "TREE":
+            self.tree_pane_frame.setStyleSheet(tree_active_style)
+            self.editor_pane_frame.setStyleSheet(inactive_style)
+            return
+
+        self.tree_pane_frame.setStyleSheet(inactive_style)
+        self.editor_pane_frame.setStyleSheet(editor_inactive_style)
+
+    def _update_editor_field_highlights(self) -> None:
+        neutral_style = "border: 1px solid transparent;"
+        nav_style = "border: 2px solid #2563eb;"
+        edit_style = "border: 2px solid #dc2626;"
+
+        for frame in self._editor_field_frames.values():
+            frame.setStyleSheet(neutral_style)
+
+        if self._active_pane != "EDITOR":
+            return
+        if self._active_editor_widget not in self._editor_field_frames:
+            return
+
+        active_frame = self._editor_field_frames[self._active_editor_widget]
+        if self.editor_mode == self.EDIT_MODE:
+            active_frame.setStyleSheet(edit_style)
+        else:
+            active_frame.setStyleSheet(nav_style)
+
+    def _focus_tree(self) -> None:
+        self.tree.setFocus()
+        self._set_active_pane("TREE")
+
+    def _focus_editor_pane(self) -> None:
+        if self._active_editor_widget not in self._editor_fields:
+            self._active_editor_widget = self.title_edit
+        self._active_editor_widget.setFocus()
+        self._set_active_pane("EDITOR")
+        self._set_editor_mode(self.NAVIGATION_MODE)
+
+    def _toggle_pane_focus(self) -> None:
+        focused_widget = self.focusWidget()
+        if focused_widget is self.tree or (focused_widget is not None and self.tree.isAncestorOf(focused_widget)):
+            self._focus_editor_pane()
+            return
+        self._focus_tree()
+
+    def _focus_prev_editor_field(self) -> None:
+        if self._active_editor_widget not in self._editor_fields:
+            self._active_editor_widget = self.title_edit
+        index = self._editor_fields.index(self._active_editor_widget)
+        self._active_editor_widget = self._editor_fields[(index - 1) % len(self._editor_fields)]
+        self._active_editor_widget.setFocus()
+
+    def _focus_next_editor_field(self) -> None:
+        if self._active_editor_widget not in self._editor_fields:
+            self._active_editor_widget = self.title_edit
+        index = self._editor_fields.index(self._active_editor_widget)
+        self._active_editor_widget = self._editor_fields[(index + 1) % len(self._editor_fields)]
+        self._active_editor_widget.setFocus()
+
+    def _start_inline_tree_rename(self, node: Node) -> None:
+        item = self._find_item_by_node(node)
+        if item is None:
+            return
+        self.tree.setCurrentItem(item)
+        self.tree.editItem(item, 0)
+        QTimer.singleShot(0, self._select_inline_tree_editor_text)
+
+    def _select_inline_tree_editor_text(self) -> None:
+        focused_widget = self.focusWidget()
+        if isinstance(focused_widget, QLineEdit) and self.tree.isAncestorOf(focused_widget):
+            focused_widget.selectAll()
+
+    def _add_tree_sibling_below_and_rename(self) -> None:
+        selected_node = self._selected_node()
+        path = self._path_for_node(selected_node)
+        if path is None or not path:
+            QMessageBox.information(self, "Not allowed", "Root has no sibling.")
+            return
+        created_node = Node()
+        parent_path = path[:-1]
+        insert_index = path[-1] + 1
+        success = self._execute(
+            CreateNodeCommand(parent_path=parent_path, insert_index=insert_index, node=created_node),
+            keep_selection_node=created_node,
+        )
+        if success:
+            self._start_inline_tree_rename(created_node)
+
+    def _add_tree_child_and_rename(self) -> None:
+        selected_node = self._selected_node()
+        path = self._path_for_node(selected_node)
+        if path is None:
+            return
+        created_node = Node()
+        parent = selected_node
+        insert_index = len(sorted_children(parent))
+        success = self._execute(
+            CreateNodeCommand(parent_path=path, insert_index=insert_index, node=created_node),
+            keep_selection_node=created_node,
+        )
+        if success:
+            self._start_inline_tree_rename(created_node)
+
+    def eventFilter(self, watched, event) -> bool:
+        if event.type() == QEvent.FocusIn:
+            if watched is self.tree:
+                self._set_active_pane("TREE")
+            elif self._is_editor_pane_widget(watched):
+                if self._is_editor_input_widget(watched):
+                    self._active_editor_widget = watched
+                else:
+                    self._active_editor_widget = None
+                if self._active_pane != "EDITOR":
+                    self._set_editor_mode(self.NAVIGATION_MODE)
+                self._set_active_pane("EDITOR")
+
+        if event.type() != QEvent.KeyPress:
+            return super().eventFilter(watched, event)
+
+        modifiers = event.modifiers()
+        key = event.key()
+
+        if modifiers & Qt.ControlModifier and key in (Qt.Key_Tab, Qt.Key_Backtab):
+            self._toggle_pane_focus()
+            return True
+
+        if watched is self.tree:
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self._add_tree_sibling_below_and_rename()
+                return True
+            if event.key() == Qt.Key_Insert:
+                self._add_tree_child_and_rename()
+                return True
+            if event.key() == Qt.Key_F2:
+                selected_node = self._selected_node()
+                if selected_node is not None:
+                    self._start_inline_tree_rename(selected_node)
+                return True
+
+        if self._is_editor_input_widget(watched):
+            if self.editor_mode == self.NAVIGATION_MODE:
+                if key == Qt.Key_Up:
+                    self._focus_prev_editor_field()
+                    return True
+                if key == Qt.Key_Down:
+                    self._focus_next_editor_field()
+                    return True
+                if key in (Qt.Key_Return, Qt.Key_Enter):
+                    self._set_editor_mode(self.EDIT_MODE)
+                    return True
+            else:
+                if key == Qt.Key_Escape:
+                    self._set_editor_mode(self.NAVIGATION_MODE)
+                    return True
+                if (modifiers & Qt.ControlModifier) and key in (Qt.Key_Return, Qt.Key_Enter):
+                    self._set_editor_mode(self.NAVIGATION_MODE)
+                    return True
+
+        return super().eventFilter(watched, event)
+
+    def _on_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        if column != 0:
+            return
+        node = item.data(0, Qt.UserRole)
+        if not isinstance(node, Node):
+            return
+        new_title = item.text(0)
+        if node.title == new_title:
+            return
+        path = self._path_for_node(node)
+        if path is None:
+            return
+        self._execute(
+            UpdateFieldCommand(path=path, field_name="title", new_value=new_title),
+            keep_selection_node=node,
+        )
 
     def _update_window_title(self) -> None:
         suffix = " [Read-only]" if self.read_only_mode else ""
@@ -308,10 +597,7 @@ class MainWindow(QMainWindow):
         for widget in self._mutating_widgets:
             widget.setEnabled(not read_only)
 
-        if read_only:
-            self.statusBar().showMessage("READ-ONLY – File locked by another instance")
-        else:
-            self.statusBar().clearMessage()
+        self._update_status_indicator()
 
         self._update_window_title()
 
@@ -374,9 +660,9 @@ class MainWindow(QMainWindow):
                 item = QTreeWidgetItem([node.title])
                 item.setData(0, Qt.UserRole, node)
                 if path:
-                    item.setFlags(item.flags() | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
+                    item.setFlags(item.flags() | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled | Qt.ItemIsEditable)
                 else:
-                    item.setFlags((item.flags() | Qt.ItemIsDropEnabled) & ~Qt.ItemIsDragEnabled)
+                    item.setFlags(((item.flags() | Qt.ItemIsDropEnabled | Qt.ItemIsEditable) & ~Qt.ItemIsDragEnabled))
                 if parent_item is None:
                     self.tree.addTopLevelItem(item)
                 else:

@@ -1,0 +1,57 @@
+You are extending an existing PyQt5 application.
+
+Read:
+- spec/spec_v1.md
+- spec/addenda/add_005_icons_and_highlighting.md
+
+Implement ONLY this addendum (UI polish only).
+Do NOT change domain logic.
+Do NOT refactor UI structure beyond what is necessary to add frames/styles.
+
+----------------------------------------
+Step 1 — Quick plan (5–10 lines)
+Explain:
+- Where toolbar actions are defined and how icons will be attached.
+- How you will detect active pane (focus-in events, eventFilter, or QApplication focusChanged).
+- How you will determine editor mode (existing NAV/EDIT state) and apply styling.
+
+Then implement.
+
+----------------------------------------
+Step 2 — Toolbar icons
+- Remove toolbar text, keep QActions.
+- Use Qt standard icons via QStyle.standardIcon for each action.
+- Ensure tooltips include action name + shortcut.
+
+----------------------------------------
+Step 3 — Pane highlighting
+- Wrap Tree area and Editor area in QFrame (if not already).
+- Apply border styles:
+  - active: thicker + blue
+  - inactive: thin + neutral
+- Update highlight on focus change and Ctrl+Tab.
+
+Implementation hint:
+- Use QApplication.instance().focusChanged(old, new) OR an eventFilter to detect focus entering each pane.
+
+----------------------------------------
+Step 4 — Editor mode highlighting
+- When editor pane is active:
+  - NAV mode => blue border
+  - EDIT mode => red border
+- When tree pane is active:
+  - editor border should be inactive style.
+- Optional: update status bar with "EDITOR: NAV/EDIT".
+
+----------------------------------------
+Step 5 — Checkpoint
+Output:
+1) Modified files
+2) How to run app
+3) Manual test checklist
+
+STRICT RULES
+- No new features.
+- No domain changes.
+- Keep changes minimal.
+Output only changed/new files and checkpoint.
