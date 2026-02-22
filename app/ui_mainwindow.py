@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QCloseEvent, QKeySequence
+from PyQt5.QtCore import QMimeData, QSignalBlocker, Qt, pyqtSignal
+from PyQt5.QtGui import QCloseEvent, QDrag, QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
     QCheckBox,
@@ -21,6 +22,7 @@ from PyQt5.QtWidgets import (
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+    QAbstractItemView,
 )
 
 from domain.command_manager import CommandManager
@@ -39,6 +41,9 @@ from domain.persistence import SaveWithoutLockError, ensure_save_permitted, load
 from domain.transform import TransformError
 
 
+logger = logging.getLogger(__name__)
+
+
 class FocusOutTextEdit(QPlainTextEdit):
     def __init__(self, on_focus_out, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -47,6 +52,105 @@ class FocusOutTextEdit(QPlainTextEdit):
     def focusOutEvent(self, event):
         super().focusOutEvent(event)
         self._on_focus_out()
+
+
+class DragDropTreeWidget(QTreeWidget):
+    move_requested = pyqtSignal(object, object, int)
+    _NODE_MIME_TYPE = "application/x-spectree-node-ref"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self._drag_source_node: object | None = None
+
+    def startDrag(self, supportedActions) -> None:
+        items = self.selectedItems()
+        if len(items) != 1:
+            return
+        source_item = items[0]
+        source_node = source_item.data(0, Qt.UserRole)
+        if source_node is None or source_item.parent() is None:
+            return
+        self._drag_source_node = source_node
+        try:
+            drag = QDrag(self)
+            mime = self.mimeData(items)
+            if mime is None:
+                mime = QMimeData()
+            mime.setData(self._NODE_MIME_TYPE, b"node")
+            drag.setMimeData(mime)
+            drag.exec_(Qt.MoveAction)
+        finally:
+            self._drag_source_node = None
+
+    def dragEnterEvent(self, event) -> None:
+        if self._drag_source_node is not None:
+            event.setDropAction(Qt.MoveAction)
+            super().dragEnterEvent(event)
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event) -> None:
+        if self._drag_source_node is not None:
+            event.setDropAction(Qt.MoveAction)
+            super().dragMoveEvent(event)
+            return
+        event.ignore()
+
+    def dropEvent(self, event) -> None:
+        source_node = self._drag_source_node
+        if source_node is None:
+            event.ignore()
+            return
+
+        target_item = self.itemAt(event.pos())
+        if target_item is None:
+            self._drag_source_node = None
+            event.ignore()
+            return
+
+        target_node = target_item.data(0, Qt.UserRole)
+        if target_node is None:
+            self._drag_source_node = None
+            event.ignore()
+            return
+        drop_position = self.dropIndicatorPosition()
+
+        logger.debug(
+            "DnD drop received: source=%s target=%s position=%s",
+            getattr(source_node, "title", None),
+            getattr(target_node, "title", None),
+            drop_position,
+        )
+
+        if drop_position == QAbstractItemView.OnItem:
+            pass
+        elif drop_position in (QAbstractItemView.AboveItem, QAbstractItemView.BelowItem):
+            if target_item.parent() is None:
+                self._drag_source_node = None
+                event.ignore()
+                return
+        else:
+            self._drag_source_node = None
+            event.ignore()
+            return
+
+        logger.debug(
+            "DnD accepted: source=%s target=%s drop_position=%s",
+            getattr(source_node, "title", None),
+            getattr(target_node, "title", None),
+            drop_position,
+        )
+
+        self.move_requested.emit(source_node, target_node, int(drop_position))
+        self._drag_source_node = None
+        event.setDropAction(Qt.IgnoreAction)
+        event.accept()
 
 
 class MainWindow(QMainWindow):
@@ -62,9 +166,10 @@ class MainWindow(QMainWindow):
         self.read_only_mode = False
         self._loading_fields = False
 
-        self.tree = QTreeWidget()
+        self.tree = DragDropTreeWidget()
         self.tree.setHeaderLabels(["Title"])
         self.tree.itemSelectionChanged.connect(self._on_selection_changed)
+        self.tree.move_requested.connect(self._on_tree_move_requested)
 
         self.title_edit = QLineEdit()
         self.title_edit.editingFinished.connect(lambda: self._commit_field("title", self.title_edit.text()))
@@ -124,6 +229,31 @@ class MainWindow(QMainWindow):
         self.statusBar()
         self._set_read_only_mode(False)
         self._refresh_tree()
+
+    def _debug_domain_tree_lines(self) -> list[str]:
+        lines: list[str] = []
+
+        def walk(node: Node, depth: int) -> None:
+            lines.append(f"{'  ' * depth}- {node.title}")
+            for child in sorted_children(node):
+                walk(child, depth + 1)
+
+        walk(self.model.root, 0)
+        return lines
+
+    def _debug_ui_tree_lines(self) -> list[str]:
+        lines: list[str] = []
+
+        def walk(item: QTreeWidgetItem, depth: int) -> None:
+            node = item.data(0, Qt.UserRole)
+            lines.append(f"{'  ' * depth}- {item.text(0)} node={id(node)}")
+            for index in range(item.childCount()):
+                walk(item.child(index), depth + 1)
+
+        root_item = self.tree.topLevelItem(0)
+        if root_item is not None:
+            walk(root_item, 0)
+        return lines
 
     def _build_toolbar(self) -> None:
         toolbar = QToolBar("Main")
@@ -185,36 +315,83 @@ class MainWindow(QMainWindow):
     def _release_document_lock(self) -> None:
         self.document_lock.release()
 
-    def _selected_path(self) -> tuple[int, ...] | None:
+    def _selected_node(self) -> Node | None:
         items = self.tree.selectedItems()
         if not items:
             return None
-        return tuple(items[0].data(0, Qt.UserRole))
+        node = items[0].data(0, Qt.UserRole)
+        if not isinstance(node, Node):
+            return None
+        return node
 
-    def _refresh_tree(self, selected_path: tuple[int, ...] | None = None) -> None:
-        self.tree.clear()
+    def _path_for_node(self, target: Node | None) -> tuple[int, ...] | None:
+        if target is None:
+            return None
 
-        def build(node: Node, parent_item: QTreeWidgetItem | None, path: tuple[int, ...]) -> None:
-            item = QTreeWidgetItem([node.title])
-            item.setData(0, Qt.UserRole, path)
-            if parent_item is None:
-                self.tree.addTopLevelItem(item)
-            else:
-                parent_item.addChild(item)
-            for idx, child in enumerate(sorted(node.children, key=lambda n: n.sort_key)):
-                build(child, item, path + (idx,))
+        def walk(node: Node, path: tuple[int, ...]) -> tuple[int, ...] | None:
+            if node is target:
+                return path
+            for idx, child in enumerate(sorted_children(node)):
+                found = walk(child, path + (idx,))
+                if found is not None:
+                    return found
+            return None
 
-        build(self.model.root, None, tuple())
-        self.tree.expandAll()
+        return walk(self.model.root, tuple())
 
-        if selected_path is None:
-            selected_path = tuple()
+    def _parent_and_index_for_node(self, target: Node | None) -> tuple[tuple[int, ...], int] | None:
+        path = self._path_for_node(target)
+        if path is None or not path:
+            return None
+        return path[:-1], path[-1]
 
-        item = self._find_item_by_path(selected_path)
-        if item is None:
-            item = self._find_item_by_path(tuple())
-        if item is not None:
-            self.tree.setCurrentItem(item)
+    def _find_item_by_node(self, target: Node) -> QTreeWidgetItem | None:
+        root = self.tree.topLevelItem(0)
+        if root is None:
+            return None
+
+        def walk(item: QTreeWidgetItem) -> QTreeWidgetItem | None:
+            item_node = item.data(0, Qt.UserRole)
+            if item_node is target:
+                return item
+            for index in range(item.childCount()):
+                found = walk(item.child(index))
+                if found is not None:
+                    return found
+            return None
+
+        return walk(root)
+
+    def _refresh_tree(self, selected_node: Node | None = None) -> None:
+        logger.debug("UI refresh start")
+        with QSignalBlocker(self.tree):
+            self.tree.clear()
+
+            def build(node: Node, parent_item: QTreeWidgetItem | None, path: tuple[int, ...]) -> None:
+                item = QTreeWidgetItem([node.title])
+                item.setData(0, Qt.UserRole, node)
+                if path:
+                    item.setFlags(item.flags() | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
+                else:
+                    item.setFlags((item.flags() | Qt.ItemIsDropEnabled) & ~Qt.ItemIsDragEnabled)
+                if parent_item is None:
+                    self.tree.addTopLevelItem(item)
+                else:
+                    parent_item.addChild(item)
+                for idx, child in enumerate(sorted_children(node)):
+                    build(child, item, path + (idx,))
+
+            build(self.model.root, None, tuple())
+            self.tree.expandAll()
+
+            item = self._find_item_by_node(selected_node) if selected_node is not None else None
+            if item is None:
+                item = self.tree.topLevelItem(0)
+            if item is not None:
+                self.tree.setCurrentItem(item)
+
+        logger.debug("Domain tree after refresh:\n%s", "\n".join(self._debug_domain_tree_lines()))
+        logger.debug("UI tree after refresh:\n%s", "\n".join(self._debug_ui_tree_lines()))
 
     def _find_item_by_path(self, path: tuple[int, ...]) -> QTreeWidgetItem | None:
         root = self.tree.topLevelItem(0)
@@ -230,78 +407,157 @@ class MainWindow(QMainWindow):
         return item
 
     def _on_selection_changed(self) -> None:
-        path = self._selected_path()
-        if path is None:
-            return
-        node = self.model.get_node(path)
-        self._loading_fields = True
-        self.title_edit.setText(node.title)
-        self.content_edit.setPlainText(node.content)
-        self.sensors_edit.setPlainText(node.sensors)
-        self.actuators_edit.setPlainText(node.actuators)
-        self.image_edit.setText(node.image)
-        self.printable_check.setChecked(node.printable)
-        self._loading_fields = False
+        try:
+            node = self._selected_node()
+            if node is None:
+                return
+            self._loading_fields = True
+            self.title_edit.setText(node.title)
+            self.content_edit.setPlainText(node.content)
+            self.sensors_edit.setPlainText(node.sensors)
+            self.actuators_edit.setPlainText(node.actuators)
+            self.image_edit.setText(node.image)
+            self.printable_check.setChecked(node.printable)
+        except (IndexError, ValueError, TypeError) as exc:
+            logger.debug("Selection update skipped due to stale selection: %s", exc)
+        finally:
+            self._loading_fields = False
 
-    def _execute(self, command, keep_selection: tuple[int, ...] | None = None) -> None:
+    def _on_tree_move_requested(self, source_node: Node, target_node: Node, drop_position: int) -> None:
+        logger.debug(
+            "Move requested: source=%s target=%s drop_position=%s",
+            getattr(source_node, "title", None),
+            getattr(target_node, "title", None),
+            drop_position,
+        )
+
+        source_path = self._path_for_node(source_node)
+        target_path = self._path_for_node(target_node)
+        target_parent_and_index = self._parent_and_index_for_node(target_node)
+        if source_path is None or target_path is None:
+            return
+        if not source_path:
+            return
+
+        if drop_position == int(QAbstractItemView.OnItem):
+            new_parent_path = target_path
+            new_index = len(sorted_children(target_node))
+        elif drop_position == int(QAbstractItemView.AboveItem):
+            if target_parent_and_index is None:
+                return
+            new_parent_path, target_index = target_parent_and_index
+            new_index = target_index
+        elif drop_position == int(QAbstractItemView.BelowItem):
+            if target_parent_and_index is None:
+                return
+            new_parent_path, target_index = target_parent_and_index
+            new_index = target_index + 1
+        else:
+            return
+
+        if new_parent_path[: len(source_path)] == source_path:
+            return
+
+        normalized_index = new_index
+        source_parent_path = source_path[:-1]
+        source_index = source_path[-1]
+
+        if source_parent_path == new_parent_path and source_index < normalized_index:
+            normalized_index -= 1
+
+        if source_parent_path == new_parent_path and source_index == normalized_index:
+            return
+
+        logger.debug(
+            "Move normalized: source=%s new_parent=%s normalized_index=%s",
+            source_path,
+            new_parent_path,
+            normalized_index,
+        )
+
+        self._execute(
+            MoveNodeCommand(path=source_path, new_parent_path=new_parent_path, new_index=normalized_index),
+            keep_selection_node=source_node,
+        )
+
+    def _execute(self, command, keep_selection_node: Node | None = None) -> None:
         if self.read_only_mode:
             QMessageBox.critical(self, "Read-only", "Cannot modify while file is locked by another instance.")
             return
         try:
+            logger.debug(
+                "Executing command: %s",
+                command.__class__.__name__,
+            )
+            selected_before = self._selected_node()
             self.command_manager.execute(command)
-            self._refresh_tree(selected_path=keep_selection or self._selected_path())
+            logger.debug("Executed command: %s", command.__class__.__name__)
+            self._refresh_tree(selected_node=keep_selection_node or selected_before)
         except (ValueError, IndexError, TransformError) as exc:
+            logger.debug("Command failed: %s error=%s", command.__class__.__name__, exc)
             QMessageBox.critical(self, "Operation failed", str(exc))
 
     def _commit_field(self, field_name: str, value) -> None:
         if self._loading_fields or self.read_only_mode:
             return
-        path = self._selected_path()
+        node = self._selected_node()
+        path = self._path_for_node(node)
         if path is None:
             return
-        node = self.model.get_node(path)
+        selected_node = node
         if getattr(node, field_name) == value:
             return
-        self._execute(UpdateFieldCommand(path=path, field_name=field_name, new_value=value), keep_selection=path)
+        self._execute(
+            UpdateFieldCommand(path=path, field_name=field_name, new_value=value),
+            keep_selection_node=selected_node,
+        )
 
     def add_sibling(self) -> None:
-        path = self._selected_path()
+        selected_node = self._selected_node()
+        path = self._path_for_node(selected_node)
         if path is None or not path:
             QMessageBox.information(self, "Not allowed", "Root has no sibling.")
             return
         parent_path = path[:-1]
         insert_index = path[-1] + 1
-        self._execute(CreateNodeCommand(parent_path=parent_path, insert_index=insert_index), keep_selection=parent_path + (insert_index,))
+        self._execute(CreateNodeCommand(parent_path=parent_path, insert_index=insert_index))
 
     def add_child(self) -> None:
-        path = self._selected_path()
+        selected_node = self._selected_node()
+        path = self._path_for_node(selected_node)
         if path is None:
             return
-        parent = self.model.get_node(path)
+        parent = selected_node
         insert_index = len(sorted_children(parent))
-        self._execute(CreateNodeCommand(parent_path=path, insert_index=insert_index), keep_selection=path + (insert_index,))
+        self._execute(CreateNodeCommand(parent_path=path, insert_index=insert_index))
 
     def delete_selected(self) -> None:
-        path = self._selected_path()
+        selected_node = self._selected_node()
+        path = self._path_for_node(selected_node)
         if path is None:
             return
         if not path:
             QMessageBox.information(self, "Not allowed", "Root cannot be deleted.")
             return
-        self._execute(DeleteNodeCommand(path=path), keep_selection=path[:-1])
+        self._execute(DeleteNodeCommand(path=path))
 
     def move_up(self) -> None:
-        path = self._selected_path()
+        selected_node = self._selected_node()
+        path = self._path_for_node(selected_node)
         if path is None or not path:
             return
         idx = path[-1]
         if idx == 0:
             return
         parent_path = path[:-1]
-        self._execute(MoveNodeCommand(path=path, new_parent_path=parent_path, new_index=idx - 1), keep_selection=parent_path + (idx - 1,))
+        self._execute(
+            MoveNodeCommand(path=path, new_parent_path=parent_path, new_index=idx - 1),
+            keep_selection_node=selected_node,
+        )
 
     def move_down(self) -> None:
-        path = self._selected_path()
+        selected_node = self._selected_node()
+        path = self._path_for_node(selected_node)
         if path is None or not path:
             return
         parent = self.model.get_node(path[:-1])
@@ -310,29 +566,38 @@ class MainWindow(QMainWindow):
         if idx >= len(siblings) - 1:
             return
         parent_path = path[:-1]
-        self._execute(MoveNodeCommand(path=path, new_parent_path=parent_path, new_index=idx + 1), keep_selection=parent_path + (idx + 1,))
+        self._execute(
+            MoveNodeCommand(path=path, new_parent_path=parent_path, new_index=idx + 1),
+            keep_selection_node=selected_node,
+        )
 
     def flatten_selected(self) -> None:
-        path = self._selected_path()
+        selected_node = self._selected_node()
+        path = self._path_for_node(selected_node)
         if path is None or not path:
             QMessageBox.information(self, "Not allowed", "Select a non-root node to flatten.")
             return
-        self._execute(FlattenBranchToNodeCommand(path=path), keep_selection=path)
+        self._execute(FlattenBranchToNodeCommand(path=path))
 
     def expand_selected(self) -> None:
-        path = self._selected_path()
+        selected_node = self._selected_node()
+        path = self._path_for_node(selected_node)
         if path is None or not path:
             QMessageBox.information(self, "Not allowed", "Select a non-root node to expand.")
             return
-        self._execute(ExpandNodeToBranchCommand(path=path), keep_selection=path)
+        self._execute(ExpandNodeToBranchCommand(path=path))
 
     def undo(self) -> None:
+        selected_node = self._selected_node()
         if self.command_manager.undo():
-            self._refresh_tree(selected_path=self._selected_path())
+            logger.debug("Undo executed")
+            self._refresh_tree(selected_node=selected_node)
 
     def redo(self) -> None:
+        selected_node = self._selected_node()
         if self.command_manager.redo():
-            self._refresh_tree(selected_path=self._selected_path())
+            logger.debug("Redo executed")
+            self._refresh_tree(selected_node=selected_node)
 
     def new_file(self) -> None:
         if not self._confirm_discard_if_dirty():
@@ -342,7 +607,7 @@ class MainWindow(QMainWindow):
         self.command_manager = CommandManager(self.model)
         self.current_path = None
         self._set_read_only_mode(False)
-        self._refresh_tree(tuple())
+        self._refresh_tree()
 
     def open_file(self) -> None:
         if not self._confirm_discard_if_dirty():
@@ -361,7 +626,7 @@ class MainWindow(QMainWindow):
             self.command_manager = CommandManager(self.model)
             self.current_path = opened_path
             self._set_read_only_mode(not has_lock)
-            self._refresh_tree(tuple())
+            self._refresh_tree()
         except (ValueError, OSError) as exc:
             QMessageBox.critical(self, "Open failed", str(exc))
 

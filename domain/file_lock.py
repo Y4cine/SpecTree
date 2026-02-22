@@ -21,9 +21,8 @@ class DocumentLock:
     def acquire_for_path(self, path: str | Path) -> bool:
         self.release()
         target_path = Path(path)
-        lock_path = target_path.with_name(f"{target_path.name}.lock")
         lock = portalocker.Lock(
-            str(lock_path),
+            str(target_path),
             mode="a+",
             timeout=0,
             flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
@@ -34,7 +33,7 @@ class DocumentLock:
             return False
 
         self._lock = lock
-        self._lock_path = lock_path
+        self._lock_path = target_path
         return True
 
     def release(self) -> None:
